@@ -64,7 +64,11 @@ object MarkdownAppend {
         return ((if (atLineStart) "" else eol) + line + eol).toByteArray(Charsets.UTF_8)
     }
 
-    fun append(file: FileAccess, line: String): AppendResult {
+    /**
+     * [beforeWrite] gets the offset and the bytes right before they are written, to store
+     * them; if it throws, nothing is written.
+     */
+    fun append(file: FileAccess, line: String, beforeWrite: (offset: Long, bytes: ByteArray) -> Unit = { _, _ -> }): AppendResult {
         val size: Long
         val bytes: ByteArray
         try {
@@ -75,6 +79,11 @@ object MarkdownAppend {
             if (file.size() != size) return AppendResult.NotWritten("The file changed while saving. Try again.")
         } catch (e: IOException) {
             return AppendResult.NotWritten("Could not read the file: ${e.message}")
+        }
+        try {
+            beforeWrite(size, bytes)
+        } catch (e: Exception) {
+            return AppendResult.NotWritten("Could not store the capture before saving: ${e.message}")
         }
         try {
             file.write(size, bytes)
@@ -93,4 +102,104 @@ object MarkdownAppend {
             AppendResult.Unverified("The file does not hold the new line after writing it.")
         }
     }
+
+    /** Files larger than this are not searched for a line; the user decides instead. */
+    private const val MAX_SEARCH = 32L * 1024 * 1024
+
+    /**
+     * Whether [bytes], once meant to go at [offset], are in the file now. The file being
+     * exactly as long as it was before the write means they are not.
+     */
+    fun check(file: FileAccess, offset: Long, bytes: ByteArray): WriteCheck {
+        val size = file.size()
+        if (size == offset) return WriteCheck.ABSENT
+        if (size >= offset + bytes.size && file.read(offset, bytes.size).contentEquals(bytes)) return WriteCheck.PRESENT
+        // The file changed otherwise since: the line may have been written and moved.
+        if (size > MAX_SEARCH) return WriteCheck.ELSEWHERE
+        val line = String(bytes, Charsets.UTF_8).trim('\r', '\n')
+        val text = String(file.read(0, size.toInt()), Charsets.UTF_8)
+        return if (text.lineSequence().any { it == line }) WriteCheck.ELSEWHERE else WriteCheck.ABSENT
+    }
+}
+
+enum class WriteCheck {
+    /** Exactly where it was written. */
+    PRESENT,
+
+    /** Not in the file. */
+    ABSENT,
+
+    /** The same line is in the file, but not where it was written: maybe an earlier capture's. */
+    ELSEWHERE,
+}
+
+/**
+ * Saving a capture's text into the Markdown file without losing it or adding it twice.
+ * Before the bytes are written, the record says exactly what goes where (status SAVING,
+ * [CaptureRecord.pending]); whenever a write was not confirmed, the file is checked before
+ * the next attempt.
+ */
+object TaskSaver {
+    /**
+     * What to make of a record's unconfirmed write, from [check] on its file (null when the
+     * file could not be read, with [problem] saying why). [absentMessage] goes with a record
+     * whose line is not in the file.
+     */
+    fun resolve(record: CaptureRecord, check: WriteCheck?, problem: String?, absentMessage: String?): CaptureRecord {
+        val pending = record.pending ?: return record
+        return when (check) {
+            WriteCheck.PRESENT -> saved(record, pending.line, pending.fileName)
+            WriteCheck.ABSENT -> record.copy(status = CaptureStatus.FAILED, pending = null, needsDecision = false, message = absentMessage)
+            WriteCheck.ELSEWHERE -> record.copy(
+                status = CaptureStatus.FAILED,
+                needsDecision = true,
+                message = "${pending.fileName} already has this line, but not where the unconfirmed save put it. " +
+                    "It may be from that save or from an earlier capture.",
+            )
+            null -> record.copy(
+                status = CaptureStatus.FAILED,
+                needsDecision = true,
+                message = "Could not check whether ${pending.fileName} already has this line: $problem",
+            )
+        }
+    }
+
+    /** Appends the record's text to [file] (at [uri], named [fileName]); [persist] stores each step. */
+    fun append(record: CaptureRecord, file: FileAccess, uri: String, fileName: String, persist: (CaptureRecord) -> Unit): CaptureRecord {
+        val line = TaskLine.format(record.text)
+            ?: return record.copy(status = CaptureStatus.FAILED, message = "Nothing to save: the text is empty.")
+        var started = record
+        val result = MarkdownAppend.append(file, line) { offset, bytes ->
+            started = record.copy(
+                status = CaptureStatus.SAVING,
+                pending = PendingWrite(uri, fileName, offset, String(bytes, Charsets.UTF_8)),
+                needsDecision = false,
+                message = null,
+            )
+            persist(started)
+        }
+        return when (result) {
+            is AppendResult.Appended -> saved(record, line, fileName)
+            is AppendResult.NotWritten -> record.copy(
+                status = CaptureStatus.FAILED,
+                pending = null,
+                needsDecision = false,
+                message = "Not saved. ${result.message}",
+            )
+            is AppendResult.Unverified -> started.copy(
+                status = CaptureStatus.FAILED,
+                message = "The save could not be confirmed. ${result.message} Saving again checks the file first.",
+            )
+        }
+    }
+
+    fun saved(record: CaptureRecord, line: String, fileName: String) = record.copy(
+        status = CaptureStatus.SAVED,
+        pending = null,
+        needsDecision = false,
+        message = null,
+        savedLine = line,
+        savedTo = fileName,
+        savedAt = System.currentTimeMillis(),
+    )
 }

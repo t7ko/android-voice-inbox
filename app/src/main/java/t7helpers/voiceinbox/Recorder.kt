@@ -3,6 +3,7 @@ package t7helpers.voiceinbox
 import org.json.JSONObject
 import org.vosk.Model
 import org.vosk.Recognizer
+import java.io.Closeable
 import java.io.File
 import java.util.concurrent.LinkedBlockingQueue
 import kotlin.concurrent.thread
@@ -19,6 +20,44 @@ object Transcript {
     /** The pieces with single spaces between them, first letter capitalized: Vosk gives lowercase. */
     fun join(pieces: List<String>): String = pieces.map { it.trim() }.filter { it.isNotEmpty() }
         .joinToString(" ").replaceFirstChar { it.titlecase() }
+}
+
+/** Text from 16 kHz PCM through a Vosk recognizer; used from one thread. */
+class Transcriber(model: Model) : Closeable {
+    private val recognizer = Recognizer(model, Wav.SAMPLE_RATE.toFloat())
+    private val pieces = mutableListOf<String>()
+
+    /** Takes the next samples; returns the text so far, the unfinished last piece included. */
+    fun accept(chunk: ByteArray, length: Int): String =
+        // True at the end of an utterance, after a pause.
+        if (recognizer.acceptWaveForm(chunk, length)) {
+            pieces += Transcript.field(recognizer.result, "text")
+            Transcript.join(pieces)
+        } else {
+            Transcript.join(pieces + Transcript.field(recognizer.partialResult, "partial"))
+        }
+
+    fun finish(): String {
+        pieces += Transcript.field(recognizer.finalResult, "text")
+        return Transcript.join(pieces)
+    }
+
+    override fun close() = recognizer.close()
+
+    companion object {
+        /** The text of a WAV file, as fast as the recognizer goes. */
+        fun transcribe(model: Model, file: File): String = Transcriber(model).use { transcriber ->
+            WavFileInput(file, realTime = false).use { input ->
+                val buffer = ByteArray(Wav.BYTES_PER_SECOND / 10)
+                while (true) {
+                    val n = input.read(buffer)
+                    if (n < 0) break
+                    transcriber.accept(buffer, n)
+                }
+            }
+            transcriber.finish()
+        }
+    }
 }
 
 /**
@@ -97,11 +136,11 @@ class Recorder(
     }
 
     private fun recognize() {
-        val pieces = mutableListOf<String>()
+        var text = ""
         var recognizeError: String? = null
-        var recognizer: Recognizer? = null
+        var transcriber: Transcriber? = null
         try {
-            recognizer = Recognizer(loadModel(), Wav.SAMPLE_RATE.toFloat())
+            transcriber = Transcriber(loadModel())
             listener.onText("", recognizerReady = true)
         } catch (e: Throwable) {
             // UnsatisfiedLinkError too, when the native library does not load.
@@ -110,30 +149,25 @@ class Recorder(
         while (true) {
             val chunk = queue.take()
             if (chunk === END) break
-            val r = recognizer ?: continue
+            val t = transcriber ?: continue
             try {
-                // True at the end of an utterance, after a pause.
-                if (r.acceptWaveForm(chunk, chunk.size)) {
-                    pieces += Transcript.field(r.result, "text")
-                    listener.onText(Transcript.join(pieces), recognizerReady = true)
-                } else {
-                    listener.onText(Transcript.join(pieces + Transcript.field(r.partialResult, "partial")), recognizerReady = true)
-                }
+                text = t.accept(chunk, chunk.size)
+                listener.onText(text, recognizerReady = true)
             } catch (e: Throwable) {
                 recognizeError = "Speech recognition failed: ${e.message}"
-                recognizer = null
-                runCatching { r.close() }
+                transcriber = null
+                runCatching { t.close() }
             }
         }
-        recognizer?.let { r ->
+        transcriber?.let { t ->
             try {
-                pieces += Transcript.field(r.finalResult, "text")
+                text = t.finish()
             } catch (e: Throwable) {
                 recognizeError = "Speech recognition failed: ${e.message}"
             }
-            runCatching { r.close() }
+            runCatching { t.close() }
         }
-        listener.onFinished(Transcript.join(pieces), durationMs, recordError ?: recognizeError)
+        listener.onFinished(text, durationMs, recordError ?: recognizeError)
     }
 
     private companion object {

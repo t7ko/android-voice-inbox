@@ -32,6 +32,21 @@ object Wav {
     fun durationMs(dataSize: Long): Long = dataSize * 1000 / BYTES_PER_SECOND
 
     /**
+     * Writes the sizes into the header of a WAV file from [WavWriter] that the app left
+     * unfinished, going by the file's length. Returns the size of its samples.
+     */
+    fun repair(file: File): Long {
+        RandomAccessFile(file, "rw").use { out ->
+            val dataSize = if (out.length() < HEADER_SIZE) 0L else (out.length() - HEADER_SIZE) and 1L.inv()
+            out.setLength(HEADER_SIZE + dataSize)
+            out.seek(0)
+            out.write(header(dataSize))
+            out.fd.sync()
+            return dataSize
+        }
+    }
+
+    /**
      * Loudness of a buffer of samples from 0 (silence, -60 dBFS or less) to 1 (full scale),
      * for the level meter.
      */

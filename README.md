@@ -10,9 +10,11 @@ and tap Save. The app appends one line to the Markdown file you picked:
 - [ ] Купить молоко и хлеб
 ```
 
-Status: version 0.1.0, the first milestone. History, crash recovery, a one-tap
-shortcut that starts recording, and stopping on silence are planned next (see
-`AGENTS.md`).
+Every capture is kept, with its audio, until you delete it: if saving fails or the app
+is closed or killed at any point, the capture waits in **History** to be saved.
+
+Status: version 0.2.0. A one-tap shortcut that starts recording and stopping on silence
+are planned next (see `AGENTS.md`).
 
 ## Install and first run
 
@@ -35,8 +37,24 @@ shortcut that starts recording, and stopping on silence are planned next (see
   flushes them to storage and reads them back. **Saved** shows only when they are there.
 - If the file is gone, access was lost, or the storage cannot be written safely (cloud
   storage providers), the text stays on screen with the reason, and Save can be tried
-  again. If a write could not be confirmed, the app says so, because saving again might
-  add the line twice.
+  again, also later from History.
+- No line is added twice. Before writing, the app notes exactly what goes where. If the
+  write could not be confirmed, or the app was killed while saving, it looks in the file
+  before trying again: if the line got there, the capture counts as saved; if it is
+  clearly not there, it is written; if the same line is somewhere else in the file, you
+  choose between **Save anyway** and **mark as saved**.
+
+## History and recovery
+
+- History lists all captures with their time, length, text and status (Saved, Not
+  saved, Failed). **Open** takes one back to the editor to fix and save it; **Copy**,
+  **Play** and **Delete** (after a confirmation) do what they say.
+- **Record again** and **Later** in the editor keep the capture in History; the main
+  screen shows how many are not saved.
+- If the app is killed during a recording, the next start repairs the audio file and
+  recognizes the text again from it; the capture then waits in History.
+- The audio of saved captures is deleted 7 days after saving (Settings: 1, 7 or 30 days,
+  or keep). Captures that are not saved keep their audio until you delete them.
 
 ## Privacy
 
@@ -46,8 +64,7 @@ The download is checked against a fixed SHA-256 checksum. Nothing else goes over
 network: no accounts, analytics or crash reports. To be sure, you can block the app's
 network access in the phone's settings after the download.
 
-Recordings are kept in the app's private storage (`captures/`), about 1 MB per 30
-seconds.
+Recordings are kept in the app's private storage, about 1 MB per 30 seconds.
 
 ## Speech recognition
 
@@ -64,9 +81,8 @@ planned as a separate choice.
   audio and the text so far are kept on screen.
 - If Obsidian has the same note open with unsaved edits, Obsidian may overwrite the
   added line when it saves.
-- Captures are not listed anywhere yet, and an unsaved capture is lost from the screen
-  when the app is closed (its audio stays in app storage). History and recovery come in
-  the next version.
+- If you delete the added line in Obsidian while the app has not yet confirmed the save
+  (it was killed in that instant), the next start may add it again.
 
 ## Development
 

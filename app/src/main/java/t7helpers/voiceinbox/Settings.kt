@@ -8,6 +8,11 @@ import androidx.core.content.edit
 object Settings {
     private const val TARGET_URI = "targetUri"
     private const val TARGET_NAME = "targetName"
+    private const val AUDIO_DAYS = "audioRetentionDays"
+
+    /** Choices for [audioRetentionDays]; [KEEP_AUDIO] keeps it. */
+    val AUDIO_RETENTION_CHOICES = listOf(1, 7, 30, KEEP_AUDIO)
+    const val KEEP_AUDIO = -1
 
     private fun prefs(context: Context) = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
 
@@ -19,4 +24,9 @@ object Settings {
         putString(TARGET_URI, uri.toString())
         putString(TARGET_NAME, name)
     }
+
+    /** Days the audio of a saved capture is kept; unsaved captures always keep theirs. */
+    fun audioRetentionDays(context: Context): Int = prefs(context).getInt(AUDIO_DAYS, 7)
+
+    fun setAudioRetentionDays(context: Context, days: Int) = prefs(context).edit(commit = true) { putInt(AUDIO_DAYS, days) }
 }

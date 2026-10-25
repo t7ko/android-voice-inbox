@@ -17,10 +17,9 @@ only after the user approves.
 
 1. Done (0.1.0): recording, offline Russian recognition with live text, manual Stop,
    picking the target file, appending with manual Save, explicit success or failure.
-2. Reliability: a persistent capture record (audio, text, state) per capture; history;
-   retry; recovery after a crash or kill (WAV header repair, re-transcription from the
-   saved WAV through `WavFileInput`); duplicate prevention for uncertain writes (see
-   "Exactly once" below).
+2. Done (0.2.0): a stored record per capture, History (open, copy, play, delete),
+   retrying failed saves, recovery after a crash or kill, duplicate prevention (see
+   "Exactly once"), deleting the audio of saved captures after a set time.
 3. Convenience: a launcher entry or shortcut that starts recording at once; automatic
    stop after silence (Vosk's `Recognizer.setEndpointerDelays`, plus the level meter);
    configurable timeout and maximum length; optional automatic saving; English model.
@@ -67,9 +66,25 @@ only after the user approves.
 - The target file is persisted as a URI with a persistable read/write grant
   (`takePersistableUriPermission`); `TargetFile.hasAccess` checks the grant on every
   resume.
-- Storage is plain: SharedPreferences for settings, files for audio. Milestone 2 adds a
-  small JSON file per capture folder (written to a temporary file and renamed) rather
-  than Room.
+- Storage is plain files, no Room: SharedPreferences for settings; per capture a folder
+  `captures/<id>/` (the id is the local start time, so folders sort by time) with
+  `audio.wav` and `capture.json` (`CaptureRecord`, `CaptureStore`). A record is written to
+  a temporary file, flushed and moved over the old one atomically, before the app acts on
+  it. Statuses: RECORDING, TRANSCRIBING, READY (not saved), SAVING, SAVED, FAILED.
+- Recovery (`Capture.init`, once per process, skipping captures started by this
+  process): RECORDING or TRANSCRIBING, and folders without a readable record, get their
+  WAV header repaired from the file length (`Wav.repair`) and their audio recognized
+  again (`Transcriber.transcribe`), then READY with a note; SAVING gets its file checked
+  (below). Captures that are not saved are never deleted automatically.
+- History lists every capture, newest first: Open (into the editor, for READY and
+  FAILED), Copy, Play (`AudioPlayer`, one at a time), Delete (with a confirmation). The
+  capture screen shows "N captures not saved" when there are any.
+- In the editor, "Record again" and "Later" keep the capture in History as not saved;
+  only Delete, after a confirmation, removes it. Edited text is stored when the app leaves
+  the screen, when another capture starts and before saving.
+- Settings: the audio of saved captures is deleted 1, 7 (default) or 30 days after
+  saving, or kept; the record stays. Checked at every start of the process and when the
+  setting changes.
 - Debug builds take `files/test-input.wav` instead of the microphone while that file
   exists, played in real time (`WavFileInput`), because the emulator's microphone records
   silence. Release builds ignore it.
@@ -77,28 +92,49 @@ only after the user approves.
   `arm64-v8a`; debug builds add `x86_64` for the emulator.
 - English only, strings in code.
 
-## Exactly once (planned for milestone 2)
+## Exactly once
 
-Before writing, the capture record stores the file size and the exact bytes about to be
-appended. After a crash in Saving, or an `Unverified` result, the app reads the file: if
-those bytes are at that offset (or the file ends with that line), the capture is Saved;
-if the line is nowhere, it is safe to append; if the file changed and the line is
-elsewhere, the user decides. No hidden markers go into the vault.
+No hidden markers go into the vault. Instead (`TaskSaver`, `MarkdownAppend.check`):
+
+1. Right before the bytes are written, the record is stored as SAVING with a
+   `PendingWrite`: the file, its size then (the offset) and the exact characters. If that
+   cannot be stored, nothing is written.
+2. Written, flushed and read back: SAVED. Failed before writing: FAILED without a pending
+   write, safe to retry. Written but not confirmed (`Unverified`): FAILED with the
+   pending write kept.
+3. A SAVING record found at start-up (the app died during the write) and any retry of a
+   record with a pending write first check the file:
+   - its size equals the offset: the file is as it was before, the line is not there;
+     safe to write (this also keeps an earlier capture with the same text from being
+     mistaken for this one);
+   - the bytes are at the offset: SAVED, nothing written;
+   - otherwise, if the same line is anywhere in the file, the user decides ("Save
+     anyway" or "It is in the file: mark as saved"); if it is nowhere, safe to write;
+   - the file cannot be read: the user decides too.
+
+Remaining limits: if exactly as many bytes as the line were removed between the write and
+the check (for example the user deleted that very line in Obsidian), the file has its old
+size again, reads as "not there", and the line is written again. A file over 32 MB is not searched; the
+user decides. If Obsidian later overwrites the file with an older copy, the line is lost
+there, but the capture stays SAVED in History with its text.
 
 ## Layout
 
-- `app/src/main/java/t7helpers/voiceinbox/`: `Capture` (state of the capture in
-  progress), `Recorder` and `Transcript` (recording and recognition threads),
-  `AudioInput` (`MicInput`, `WavFileInput`), `Wav` (header, writer, level), `SpeechModel`
-  and `ModelZip` (download, unpack, load), `Markdown` (task line, append algorithm),
+- `app/src/main/java/t7helpers/voiceinbox/`: `Capture` (the capture on screen, saving,
+  recovery), `Captures` (`CaptureRecord`, `CaptureStore`), `Recorder`, `Transcriber` and
+  `Transcript` (recording and recognition threads), `AudioInput` (`MicInput`,
+  `WavFileInput`), `Wav` (header, writer, repair, level), `SpeechModel` and `ModelZip`
+  (download, unpack, load), `Markdown` (task line, append algorithm, `TaskSaver`),
   `TargetFile` (SAF access, pread/pwrite), `Settings`.
-- `.../ui/`: Compose screens `CaptureScreen` and `SettingsScreen`, shared cards in
-  `Components`; navigation is a plain enum in `MainActivity`, which also holds the file
-  picker and the microphone permission request.
-- `app/src/test/`: JVM unit tests for the append algorithm against real files (empty
-  file, with and without a trailing line break, CRLF, BOM, repeated captures, failing and
-  non-sticking writes, a file growing meanwhile), the WAV writer and reader, the
-  transcript, and model archive unpacking.
+- `.../ui/`: Compose screens `CaptureScreen`, `HistoryScreen` and `SettingsScreen`,
+  shared cards in `Components`, `AudioPlayer`; navigation is a plain enum in
+  `MainActivity`, which also holds the file picker and the microphone permission request.
+- `app/src/test/`: JVM unit tests against real files (`RafAccess`): the append algorithm
+  (empty file, with and without a trailing line break, CRLF, BOM, repeated captures,
+  failing and non-sticking writes, a file growing meanwhile), `TaskSaver` (what is stored
+  before writing, retries after confirmed and failed unconfirmed writes, a same-text
+  earlier capture, moved and removed lines), the record format and store, WAV writing,
+  reading and repair, the transcript, and model archive unpacking.
 
 ## Build and releases
 
@@ -130,6 +166,11 @@ Versions are in `gradle/libs.versions.toml`. The scripts are for Windows PowerSh
 - Files: `adb shell "run-as t7helpers.voiceinbox ls -lR files"`; the target file from the
   picker under `/sdcard/Documents/...`. Piping `adb shell cat` output on Windows shows
   CRLF line breaks that are not in the file; use `adb shell od -c` without a pipe.
+- A crash: `adb shell "run-as t7helpers.voiceinbox kill -9 <pid>"` (`pidof
+  t7helpers.voiceinbox`) during a recording. A save is too quick to interrupt; instead,
+  with the app stopped, write the `capture.json` a crash would leave (status `SAVING`
+  with a `pending` write) and set up the target file to match. Write it with a JSON
+  library: shell quoting easily turns an escaped line break into a real one.
 
 ## Tested
 
@@ -157,5 +198,27 @@ google_apis image):
   with empty text says so; a typed "Buy milk" saves as `- [ ] Buy milk`.
 - Denying the microphone shows the message and "Open App info", which opens App info.
 
+On 2026-10-25, version 0.2.0 (debug build), installed over 0.1.0 with its data:
+
+- The capture 0.1.0 had left (a folder with audio and no record) was recovered at start:
+  recognized again and listed as "Not saved" with a note; Open and Save added it to the
+  file. "N captures not saved" shows on the capture screen.
+- Killed with `kill -9` 7.7 s into a 12 s recording: the record said RECORDING and the WAV
+  header 0 bytes. At the next start, the header was repaired (246,400 bytes) and the text
+  recognized again from the audio within 9 s.
+- Records as a crash during saving leaves them: SAVING with its bytes in the file became
+  SAVED without a second write; SAVING with the file unchanged became FAILED ("The app
+  stopped while saving...") and Open, Save wrote it once. A FAILED record with an
+  unconfirmed write whose line was elsewhere in the file asked the user: "Save anyway"
+  wrote it, "It is in the file: mark as saved" did not.
+- History: Play plays the WAV and turns back to Play at its end; Copy, pasted into the
+  editor, gives the text; Delete asks first and removes the folder, the line stays in
+  the file.
+- Edited text survives leaving the app and a force stop. "Record again" and "Later" keep
+  the capture as not saved.
+- A capture saved 10 days ago lost its audio at start (7 days by default) and kept its
+  record; an unsaved one kept its audio.
+
 Not tried yet: a real phone and real speech through a microphone, a revoked SAF grant,
-a provider other than local storage, Android 8-13, release builds.
+a provider other than local storage, recovery without the speech model, Android 8-13,
+release builds.

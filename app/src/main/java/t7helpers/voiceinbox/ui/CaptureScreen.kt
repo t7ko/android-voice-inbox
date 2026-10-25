@@ -17,8 +17,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -37,6 +39,9 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -47,6 +52,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import t7helpers.voiceinbox.Capture
 import t7helpers.voiceinbox.CaptureState
+import t7helpers.voiceinbox.CaptureStatus
 import t7helpers.voiceinbox.ModelState
 import t7helpers.voiceinbox.R
 import t7helpers.voiceinbox.SpeechModel
@@ -58,16 +64,20 @@ fun CaptureScreen(
     onRecord: () -> Unit,
     onPickTarget: () -> Unit,
     onOpenAppInfo: () -> Unit,
+    onOpenHistory: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
     val state by Capture.state.collectAsState()
     val model by SpeechModel.state.collectAsState()
+    val records by Capture.records.collectAsState()
+    val unsaved = records.count { it.status == CaptureStatus.READY || it.status == CaptureStatus.FAILED }
     val context = LocalContext.current
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text("Voice Inbox") },
                 actions = {
+                    IconButton(onClick = onOpenHistory) { Icon(Icons.AutoMirrored.Filled.List, contentDescription = "History") }
                     IconButton(onClick = onOpenSettings) { Icon(Icons.Filled.Settings, contentDescription = "Settings") }
                 },
             )
@@ -87,7 +97,7 @@ fun CaptureScreen(
             if (model != ModelState.Installed) ModelCard(model, onInstall = { SpeechModel.install(context) })
             TargetCard(target, onPickTarget)
             when (val s = state) {
-                is CaptureState.Idle -> Idle(s, canRecord = model == ModelState.Installed, onRecord, onOpenAppInfo)
+                is CaptureState.Idle -> Idle(s, canRecord = model == ModelState.Installed, unsaved, onRecord, onOpenAppInfo, onOpenHistory)
                 is CaptureState.Recording -> Recording(s)
                 is CaptureState.Editing -> Editing(s, canSave = target.name != null, onRecord)
                 is CaptureState.Saving -> Busy("Saving…")
@@ -98,7 +108,14 @@ fun CaptureScreen(
 }
 
 @Composable
-private fun Idle(state: CaptureState.Idle, canRecord: Boolean, onRecord: () -> Unit, onOpenAppInfo: () -> Unit) {
+private fun Idle(
+    state: CaptureState.Idle,
+    canRecord: Boolean,
+    unsaved: Int,
+    onRecord: () -> Unit,
+    onOpenAppInfo: () -> Unit,
+    onOpenHistory: () -> Unit,
+) {
     Box(Modifier.padding(top = 32.dp)) {
         Button(
             onClick = onRecord,
@@ -113,6 +130,11 @@ private fun Idle(state: CaptureState.Idle, canRecord: Boolean, onRecord: () -> U
     state.message?.let {
         Text(it, color = MaterialTheme.colorScheme.error)
         if (state.openAppInfo) OutlinedButton(onClick = onOpenAppInfo) { Text("Open App info") }
+    }
+    if (unsaved > 0) {
+        OutlinedButton(onClick = onOpenHistory) {
+            Text(if (unsaved == 1) "1 capture not saved" else "$unsaved captures not saved")
+        }
     }
 }
 
@@ -157,6 +179,7 @@ private fun Recording(state: CaptureState.Recording) {
 @Composable
 private fun Editing(state: CaptureState.Editing, canSave: Boolean, onRecord: () -> Unit) {
     val context = LocalContext.current
+    var confirmDelete by remember { mutableStateOf(false) }
     OutlinedTextField(
         value = state.text,
         onValueChange = Capture::edit,
@@ -165,12 +188,39 @@ private fun Editing(state: CaptureState.Editing, canSave: Boolean, onRecord: () 
         modifier = Modifier.fillMaxWidth(),
     )
     state.message?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-    Button(onClick = { Capture.save(context) }, enabled = canSave, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)) {
-        Text("Save", style = MaterialTheme.typography.titleMedium)
+    if (state.needsDecision) {
+        Button(onClick = { Capture.save(context, force = true) }, enabled = canSave, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)) {
+            Text("Save anyway", style = MaterialTheme.typography.titleMedium)
+        }
+        OutlinedButton(onClick = { Capture.markSaved(context) }, modifier = Modifier.fillMaxWidth()) { Text("It is in the file: mark as saved") }
+    } else {
+        Button(onClick = { Capture.save(context) }, enabled = canSave, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)) {
+            Text("Save", style = MaterialTheme.typography.titleMedium)
+        }
     }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        OutlinedButton(onClick = { Capture.discard(); onRecord() }) { Text("Record again") }
-        TextButton(onClick = Capture::discard) { Text("Discard") }
+        OutlinedButton(onClick = onRecord) { Text("Record again") }
+        TextButton(onClick = Capture::close) { Text("Later") }
+        TextButton(onClick = { confirmDelete = true }) { Text("Delete") }
+    }
+    Text(
+        "Record again and Later keep this capture in History.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("Delete this capture?") },
+            text = { Text("It was not saved to the file. Its text and audio will be gone.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmDelete = false
+                    Capture.delete(state.id)
+                }) { Text("Delete") }
+            },
+            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel") } },
+        )
     }
 }
 
@@ -192,8 +242,8 @@ private fun Saved(state: CaptureState.Saved, onRecord: () -> Unit) {
     Card(Modifier.fillMaxWidth()) {
         Text(state.line, Modifier.padding(16.dp), fontFamily = FontFamily.Monospace)
     }
-    Button(onClick = { Capture.discard(); onRecord() }, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)) {
+    Button(onClick = onRecord, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)) {
         Text("Record another", style = MaterialTheme.typography.titleMedium)
     }
-    TextButton(onClick = Capture::discard) { Text("Done") }
+    TextButton(onClick = Capture::close) { Text("Done") }
 }

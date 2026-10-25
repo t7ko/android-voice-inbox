@@ -13,13 +13,19 @@ import java.io.File
 import java.io.IOException
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
+import java.util.concurrent.ConcurrentHashMap
 
+/** What the capture screen shows. */
 sealed interface CaptureState {
-    /** Ready to record; [message] says why the last attempt did not start, [openAppInfo] whether App info can fix it. */
+    /**
+     * Ready to record; [message] says why the last attempt did not start, [openAppInfo]
+     * whether App info can fix it.
+     */
     data class Idle(val message: String? = null, val openAppInfo: Boolean = false) : CaptureState
 
     /** [stopping]: the microphone is off and the recognizer is finishing the text. */
     data class Recording(
+        val id: String,
         val elapsedMs: Long = 0,
         val level: Float = 0f,
         val text: String = "",
@@ -27,31 +33,61 @@ sealed interface CaptureState {
         val stopping: Boolean = false,
     ) : CaptureState
 
-    /** The recognized text, editable before saving; [message] is a problem to show. */
-    data class Editing(val text: String, val message: String? = null) : CaptureState
+    /**
+     * A capture's text, editable before saving; [message] is a problem to show. With
+     * [needsDecision], an unconfirmed save may have worked: the user saves anyway or marks
+     * it saved.
+     */
+    data class Editing(
+        val id: String,
+        val text: String,
+        val message: String? = null,
+        val needsDecision: Boolean = false,
+    ) : CaptureState
 
-    data class Saving(val text: String) : CaptureState
+    data class Saving(val id: String, val text: String) : CaptureState
 
-    data class Saved(val line: String, val fileName: String) : CaptureState
+    data class Saved(val id: String, val line: String, val fileName: String) : CaptureState
 }
 
 /**
- * The capture in progress, kept for the whole process so that it survives screen rotation.
- * Audio goes to `captures/<time>/audio.wav` in app storage and stays there.
+ * The capture on screen and the stored ones. Each capture is a [CaptureRecord] in
+ * `captures/<id>/` with its audio, written before every step, so that nothing is lost when
+ * the app stops; [init] recovers what an earlier process left unfinished.
  */
 object Capture {
     private const val MAX_DURATION_MS = 120_000L
+    private const val DAY_MS = 24L * 60 * 60 * 1000
     private val ID_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS")
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val _state = MutableStateFlow<CaptureState>(CaptureState.Idle())
     val state: StateFlow<CaptureState> = _state
     @Volatile private var recorder: Recorder? = null
+    private lateinit var store: CaptureStore
+
+    /** Captures started by this process, which recovery leaves alone. */
+    private val startedHere = ConcurrentHashMap.newKeySet<String>()
+
+    /** All captures, newest first. */
+    val records: StateFlow<List<CaptureRecord>> get() = store.records
+
+    /** Loads the stored captures and, once per process, finishes those the app left unfinished. */
+    @Synchronized
+    fun init(context: Context) {
+        if (::store.isInitialized) return
+        val app = context.applicationContext
+        store = CaptureStore(File(app.filesDir, "captures"))
+        scope.launch { recover(app) }
+    }
+
+    fun audioFile(id: String): File = store.audioFile(id)
 
     /** Needs the RECORD_AUDIO permission. */
     fun start(context: Context) {
         val current = _state.value
         if (current is CaptureState.Recording || current is CaptureState.Saving) return
+        if (current is CaptureState.Editing) keep(current)
         val app = context.applicationContext
         val input = try {
             testInput(app)?.let { WavFileInput(it, realTime = true) } ?: MicInput.start()
@@ -59,14 +95,23 @@ object Capture {
             _state.value = CaptureState.Idle(e.message)
             return
         }
-        val file = File(app.filesDir, "captures/${LocalDateTime.now().format(ID_FORMAT)}/audio.wav")
-        val listener = Listener()
-        val r = Recorder(file, { SpeechModel.load(app) }, MAX_DURATION_MS, listener)
+        val id = LocalDateTime.now().format(ID_FORMAT)
+        startedHere += id
+        try {
+            store.put(CaptureRecord(id, System.currentTimeMillis(), CaptureStatus.RECORDING))
+        } catch (e: IOException) {
+            input.close()
+            _state.value = CaptureState.Idle("Could not store the capture: ${e.message}")
+            return
+        }
+        val listener = Listener(id)
+        val r = Recorder(store.audioFile(id), { SpeechModel.load(app) }, MAX_DURATION_MS, listener)
         listener.recorder = r
         recorder = r
-        _state.value = CaptureState.Recording()
+        _state.value = CaptureState.Recording(id)
         r.start(input)?.let { error ->
             recorder = null
+            store.delete(id)
             _state.value = CaptureState.Idle(error)
         }
     }
@@ -89,12 +134,49 @@ object Capture {
         _state.update { if (it is CaptureState.Recording) it.copy(stopping = true) else it }
     }
 
+    /** The app leaves the screen: a recording ends there, edited text is stored. */
+    fun onHidden() {
+        stop()
+        (_state.value as? CaptureState.Editing)?.let(::keep)
+    }
+
     fun edit(text: String) = _state.update { if (it is CaptureState.Editing) it.copy(text = text) else it }
 
-    /** Leaves the text unsaved; its audio stays in app storage. */
-    fun discard() = _state.update { if (it is CaptureState.Editing || it is CaptureState.Saved) CaptureState.Idle() else it }
+    /** Back to the record button; the capture stays in History. */
+    fun close() {
+        val current = _state.value
+        if (current is CaptureState.Editing) keep(current)
+        if (current is CaptureState.Editing || current is CaptureState.Saved) _state.value = CaptureState.Idle()
+    }
 
-    fun save(context: Context) {
+    /** Opens a capture from History for editing and saving. Returns false if that is not possible now. */
+    fun open(id: String): Boolean {
+        val current = _state.value
+        if (current is CaptureState.Recording || current is CaptureState.Saving) return false
+        val record = store.get(id) ?: return false
+        if (record.status != CaptureStatus.READY && record.status != CaptureStatus.FAILED) return false
+        if (current is CaptureState.Editing) keep(current)
+        _state.value = CaptureState.Editing(id, record.text, record.message, record.needsDecision)
+        return true
+    }
+
+    /** Deletes a capture and its audio, unless it is being recorded, recovered or saved. */
+    fun delete(id: String) {
+        val record = store.get(id) ?: return
+        if (record.status == CaptureStatus.RECORDING || record.status == CaptureStatus.TRANSCRIBING || record.status == CaptureStatus.SAVING) return
+        val current = _state.value
+        if (current is CaptureState.Saving && current.id == id) return
+        if ((current as? CaptureState.Editing)?.id == id || (current as? CaptureState.Saved)?.id == id) {
+            _state.value = CaptureState.Idle()
+        }
+        scope.launch { store.delete(id) }
+    }
+
+    /**
+     * Saves the text on screen into the Markdown file. With [force], a possible earlier
+     * write is not looked for (the user chose "Save anyway").
+     */
+    fun save(context: Context, force: Boolean = false) {
         val editing = _state.value as? CaptureState.Editing ?: return
         val app = context.applicationContext
         val uri = Settings.targetUri(app)
@@ -102,26 +184,107 @@ object Capture {
             _state.value = editing.copy(message = "Choose the Markdown file first.")
             return
         }
-        val line = TaskLine.format(editing.text)
-        if (line == null) {
+        if (TaskLine.format(editing.text) == null) {
             _state.value = editing.copy(message = "Nothing to save: the text is empty.")
             return
         }
-        _state.value = CaptureState.Saving(editing.text)
+        val record = store.get(editing.id)?.copy(text = editing.text) ?: return
+        _state.value = CaptureState.Saving(editing.id, editing.text)
         scope.launch {
-            _state.value = when (val result = TargetFile.append(app, uri, line)) {
-                is AppendResult.Appended -> CaptureState.Saved(line, Settings.targetName(app) ?: "the file")
-                is AppendResult.NotWritten -> CaptureState.Editing(editing.text, "Not saved. ${result.message}")
-                is AppendResult.Unverified -> CaptureState.Editing(
-                    editing.text,
-                    "The save could not be confirmed. ${result.message} Look in the file before saving " +
-                        "again, or the task may be added twice.",
-                )
+            val result = try {
+                store.put(record)
+                TargetFile.save(app, record, uri, Settings.targetName(app) ?: "the file", force) { store.put(it) }
+            } catch (e: Exception) {
+                record.copy(status = CaptureStatus.FAILED, message = "Not saved: ${e.message}")
             }
+            // If this fails, the record still says SAVING and recovery checks the file.
+            runCatching { store.put(result) }
+            show(result)
         }
     }
 
-    private class Listener : Recorder.Listener {
+    /** The user says the line is in the file already. */
+    fun markSaved(context: Context) {
+        val editing = _state.value as? CaptureState.Editing ?: return
+        val record = store.get(editing.id)?.copy(text = editing.text) ?: return
+        val pending = record.pending
+        val line = pending?.line ?: TaskLine.format(editing.text) ?: return
+        val fileName = pending?.fileName ?: Settings.targetName(context) ?: "the file"
+        _state.value = CaptureState.Saving(editing.id, editing.text)
+        scope.launch {
+            val result = TaskSaver.saved(record, line, fileName)
+            runCatching { store.put(result) }
+            show(result)
+        }
+    }
+
+    /** Deletes the audio of captures saved longer ago than Settings says. */
+    fun deleteOldAudio(context: Context) {
+        val days = Settings.audioRetentionDays(context)
+        if (days == Settings.KEEP_AUDIO) return
+        scope.launch { store.deleteOldAudio(System.currentTimeMillis() - days * DAY_MS) }
+    }
+
+    private fun show(record: CaptureRecord) {
+        _state.value = if (record.isSaved) {
+            CaptureState.Saved(record.id, record.savedLine.orEmpty(), record.savedTo.orEmpty())
+        } else {
+            CaptureState.Editing(record.id, record.text, record.message, record.needsDecision)
+        }
+    }
+
+    /** Stores edited text, in the background. */
+    private fun keep(editing: CaptureState.Editing) {
+        scope.launch {
+            val record = store.get(editing.id) ?: return@launch
+            if (record.text != editing.text && !record.isSaved) runCatching { store.put(record.copy(text = editing.text)) }
+        }
+    }
+
+    private fun recover(app: Context) {
+        val records = store.load()
+        for (record in records) {
+            if (record.id in startedHere) continue
+            try {
+                when (record.status) {
+                    CaptureStatus.RECORDING, CaptureStatus.TRANSCRIBING -> transcribeAgain(app, record)
+                    CaptureStatus.SAVING -> store.put(
+                        if (record.pending == null) {
+                            record.copy(status = CaptureStatus.FAILED, message = "The app stopped before saving. Save again.")
+                        } else {
+                            TargetFile.checkPending(app, record, "The app stopped while saving; the task is not in the file. Save again.")
+                        },
+                    )
+                    else -> {}
+                }
+            } catch (e: Exception) {
+                // Left as it is; the next start tries again.
+            }
+        }
+        deleteOldAudio(app)
+    }
+
+    /** A recording the app stopped in the middle of: repair its audio and recognize it again. */
+    private fun transcribeAgain(app: Context, record: CaptureRecord) {
+        val audio = store.audioFile(record.id)
+        if (!audio.isFile) {
+            store.put(record.copy(status = CaptureStatus.READY, message = "The app stopped during this recording; no audio was kept."))
+            return
+        }
+        store.put(record.copy(status = CaptureStatus.TRANSCRIBING))
+        val dataSize = Wav.repair(audio)
+        val recovered = record.copy(status = CaptureStatus.READY, durationMs = Wav.durationMs(dataSize))
+        store.put(
+            try {
+                val text = Transcriber.transcribe(SpeechModel.load(app), audio)
+                recovered.copy(text = text, message = "Recovered: the app stopped during this recording, so the text was recognized again from its audio.")
+            } catch (e: Throwable) {
+                recovered.copy(message = "The app stopped during this recording. Its audio is kept, but recognizing it failed: ${e.message}")
+            },
+        )
+    }
+
+    private class Listener(val id: String) : Recorder.Listener {
         lateinit var recorder: Recorder
         private val active get() = Capture.recorder === recorder
 
@@ -136,8 +299,15 @@ object Capture {
         override fun onFinished(text: String, durationMs: Long, error: String?) {
             if (!active) return
             Capture.recorder = null
-            val message = error ?: if (text.isEmpty()) "Nothing was recognized. Type the task or record again." else null
-            _state.value = CaptureState.Editing(text, message)
+            var message = error ?: if (text.isEmpty()) "Nothing was recognized. Type the task or record again." else null
+            val record = (store.get(id) ?: CaptureRecord(id, System.currentTimeMillis(), CaptureStatus.READY))
+                .copy(status = CaptureStatus.READY, text = text, durationMs = durationMs, message = message)
+            try {
+                store.put(record)
+            } catch (e: IOException) {
+                message = "Could not store the capture: ${e.message}"
+            }
+            _state.value = CaptureState.Editing(id, text, message)
         }
     }
 }

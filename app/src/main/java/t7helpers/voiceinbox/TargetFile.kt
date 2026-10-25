@@ -7,6 +7,7 @@ import android.provider.OpenableColumns
 import android.system.ErrnoException
 import android.system.Os
 import android.system.OsConstants
+import androidx.core.net.toUri
 import java.io.EOFException
 import java.io.FileDescriptor
 import java.io.FileNotFoundException
@@ -47,33 +48,89 @@ object TargetFile {
         null
     }
 
-    fun append(context: Context, uri: Uri, line: String): AppendResult {
-        val pfd = try {
-            // "rw" never truncates, unlike "w"; and some providers ignore "wa".
-            context.contentResolver.openFileDescriptor(uri, "rw")
-        } catch (e: SecurityException) {
-            return AppendResult.NotWritten("No permission to write the file any more. Choose it again in Settings.")
-        } catch (e: FileNotFoundException) {
-            return AppendResult.NotWritten("The file is missing or cannot be opened: ${e.message}")
-        } catch (e: Exception) {
-            return AppendResult.NotWritten("Could not open the file: ${e.message}")
-        } ?: return AppendResult.NotWritten("Could not open the file.")
-        val result = try {
-            val mode = Os.fstat(pfd.fileDescriptor).st_mode
-            if (OsConstants.S_ISREG(mode)) {
-                MarkdownAppend.append(FdFileAccess(pfd.fileDescriptor), line)
-            } else {
-                AppendResult.NotWritten("This storage does not give direct access to the file, so it cannot be appended to safely.")
+    /**
+     * Saves [record]'s text into the file at [uri]. A record with an unconfirmed earlier
+     * write first gets its file checked, unless [force]. [persist] stores every step.
+     */
+    fun save(
+        context: Context,
+        record: CaptureRecord,
+        uri: Uri,
+        fileName: String,
+        force: Boolean,
+        persist: (CaptureRecord) -> Unit,
+    ): CaptureRecord {
+        var current = record
+        val pending = record.pending
+        if (pending != null && !force) {
+            current = checkPending(context, record, absentMessage = null)
+            if (current.status == CaptureStatus.SAVED || current.needsDecision) return current
+            persist(current)
+        }
+        return open(context, uri, "rw") { file -> TaskSaver.append(current, file, uri.toString(), fileName, persist) }
+            .getOrElse { problem ->
+                current.copy(status = CaptureStatus.FAILED, pending = if (force) pending else null, message = "Not saved. $problem")
             }
-        } catch (e: ErrnoException) {
-            AppendResult.NotWritten("Could not open the file: ${e.message}")
+    }
+
+    /** Looks in the file of [record]'s unconfirmed write for the line; see [TaskSaver.resolve]. */
+    fun checkPending(context: Context, record: CaptureRecord, absentMessage: String?): CaptureRecord {
+        val pending = record.pending ?: return record
+        val bytes = pending.text.toByteArray(Charsets.UTF_8)
+        var problem: String? = null
+        val check = open(context, pending.uri.toUri(), "r") { file ->
+            try {
+                MarkdownAppend.check(file, pending.offset, bytes)
+            } catch (e: IOException) {
+                problem = e.message
+                null
+            }
+        }.getOrElse {
+            problem = it
+            null
         }
+        return TaskSaver.resolve(record, check, problem, absentMessage)
+    }
+
+    /**
+     * Runs [block] on the file at [uri] opened in [mode] ("rw" never truncates, unlike "w";
+     * some providers ignore "wa"), or fails with a message for the user.
+     */
+    private fun <T> open(context: Context, uri: Uri, mode: String, block: (FileAccess) -> T): Outcome<T> {
+        val pfd = try {
+            context.contentResolver.openFileDescriptor(uri, mode)
+        } catch (e: SecurityException) {
+            return Outcome.Failed("No permission to use the file any more. Choose it again in Settings.")
+        } catch (e: FileNotFoundException) {
+            return Outcome.Failed("The file is missing or cannot be opened: ${e.message}")
+        } catch (e: Exception) {
+            return Outcome.Failed("Could not open the file: ${e.message}")
+        } ?: return Outcome.Failed("Could not open the file.")
         try {
-            pfd.close()
-        } catch (e: IOException) {
-            if (result is AppendResult.Appended) return AppendResult.Unverified("Closing the file failed: ${e.message}")
+            val isFile = try {
+                OsConstants.S_ISREG(Os.fstat(pfd.fileDescriptor).st_mode)
+            } catch (e: ErrnoException) {
+                return Outcome.Failed("Could not open the file: ${e.message}")
+            }
+            return if (isFile) {
+                Outcome.Done(block(FdFileAccess(pfd.fileDescriptor)))
+            } else {
+                Outcome.Failed("This storage does not give direct access to the file, so it cannot be appended to safely.")
+            }
+        } finally {
+            // Written bytes were flushed and read back already; closing adds nothing.
+            runCatching { pfd.close() }
         }
-        return result
+    }
+
+    private sealed interface Outcome<out T> {
+        class Done<T>(val value: T) : Outcome<T>
+        class Failed(val message: String) : Outcome<Nothing>
+
+        fun getOrElse(onFailure: (String) -> @UnsafeVariance T): T = when (this) {
+            is Done -> value
+            is Failed -> onFailure(message)
+        }
     }
 }
 

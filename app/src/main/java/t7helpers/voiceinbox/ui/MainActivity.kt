@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings as AndroidSettings
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -20,7 +21,7 @@ import t7helpers.voiceinbox.Settings
 import t7helpers.voiceinbox.SpeechModel
 import t7helpers.voiceinbox.TargetFile
 
-private enum class Screen { CAPTURE, SETTINGS }
+private enum class Screen { CAPTURE, HISTORY, SETTINGS }
 
 /** The Markdown file as the screens show it. */
 data class Target(val name: String?, val accessible: Boolean, val problem: String? = null)
@@ -40,6 +41,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        Capture.init(this)
         SpeechModel.refresh(this)
         SpeechModel.preload(this)
         screen = savedInstanceState?.getString(KEY_SCREEN)?.let { name -> Screen.entries.find { it.name == name } }
@@ -54,8 +56,10 @@ class MainActivity : ComponentActivity() {
                         onRecord = ::record,
                         onPickTarget = ::pickTarget,
                         onOpenAppInfo = ::openAppInfo,
+                        onOpenHistory = { screen = Screen.HISTORY },
                         onOpenSettings = { screen = Screen.SETTINGS },
                     )
+                    Screen.HISTORY -> HistoryScreen(onOpen = ::openCapture, onBack = { screen = Screen.CAPTURE })
                     Screen.SETTINGS -> SettingsScreen(target, onPickTarget = ::pickTarget, onBack = { screen = Screen.CAPTURE })
                 }
             }
@@ -69,9 +73,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
-        // Android gives apps in the background only silence from the microphone, so a
-        // recording ends when the app leaves the screen. Its audio and text are kept.
-        if (!isChangingConfigurations) Capture.stop()
+        // No background recording: a recording ends when the app leaves the screen. Its
+        // audio and text are kept, and so is edited text.
+        if (!isChangingConfigurations) Capture.onHidden()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -95,6 +99,14 @@ class MainActivity : ComponentActivity() {
     private fun pickTarget() {
         // Markdown files often have no MIME type of their own, so any file can be picked.
         targetPicker.launch(arrayOf("*/*"))
+    }
+
+    private fun openCapture(id: String) {
+        if (Capture.open(id)) {
+            screen = Screen.CAPTURE
+        } else {
+            Toast.makeText(this, "Finish the current capture first.", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun openAppInfo() {

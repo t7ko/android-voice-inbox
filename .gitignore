@@ -1,0 +1,11 @@
+.gradle/
+.kotlin/
+build/
+captures/
+local.properties
+.idea/
+*.iml
+.claude/settings.local.json
+dist/
+AGENTS.local.md
+CLAUDE.local.md

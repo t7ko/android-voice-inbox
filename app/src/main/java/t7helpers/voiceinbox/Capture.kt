@@ -3,6 +3,7 @@ package t7helpers.voiceinbox
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.ApplicationInfo
+import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -31,6 +32,8 @@ sealed interface CaptureState {
     data class Recording(
         val id: String,
         val autoStopMs: Long? = null,
+        /** Started from the Record icon or shortcut. */
+        val fromIcon: Boolean = false,
         val elapsedMs: Long = 0,
         val level: Float = 0f,
         val text: String = "",
@@ -52,7 +55,8 @@ sealed interface CaptureState {
 
     data class Saving(val id: String, val text: String) : CaptureState
 
-    data class Saved(val id: String, val line: String, val fileName: String) : CaptureState
+    /** [closeApp]: saved by itself after a start from the Record icon; the app closes (Settings). */
+    data class Saved(val id: String, val line: String, val fileName: String, val closeApp: Boolean = false) : CaptureState
 }
 
 /**
@@ -63,6 +67,7 @@ sealed interface CaptureState {
 @SuppressLint("StaticFieldLeak") // Only the application context: see [app].
 object Capture {
     private const val DAY_MS = 24L * 60 * 60 * 1000
+    private const val TAG = "VoiceInbox"
     private val ID_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS")
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -72,6 +77,12 @@ object Capture {
     private lateinit var store: CaptureStore
     /** The application context, which lives as long as the process anyway. */
     private lateinit var app: Context
+
+    /**
+     * A Record tap that came while the last capture was still being recognized or saved:
+     * starts the next one as soon as that is done (true: from the Record icon). Null: none.
+     */
+    @Volatile private var startWhenSettled: Boolean? = null
 
     /** Captures started by this process, which recovery leaves alone. */
     private val startedHere = ConcurrentHashMap.newKeySet<String>()
@@ -90,21 +101,29 @@ object Capture {
 
     fun audioFile(id: String): File = store.audioFile(id)
 
-    /** Needs the RECORD_AUDIO permission. */
-    fun start(context: Context) {
+    /** Needs the RECORD_AUDIO permission. [fromIcon]: started from the Record icon or shortcut. */
+    fun start(context: Context, fromIcon: Boolean = false) {
         val current = _state.value
-        if (current is CaptureState.Recording || current is CaptureState.Saving) return
-        val app = context.applicationContext
-        val language = Settings.language(app)
-        if (SpeechModel.state(language) != ModelState.Installed) {
-            if (current is CaptureState.Idle) {
-                _state.value = CaptureState.Idle("Download the ${SpeechModel.info(language).languageName} speech model first.")
-            }
+        if ((current is CaptureState.Recording && current.stopping) || current is CaptureState.Saving) {
+            startWhenSettled = fromIcon
             return
         }
+        if (current is CaptureState.Recording) return
+        val app = context.applicationContext
+        val language = Settings.language(app)
+        // The capture on screen stays in History, with its edits, whether a new one starts or not.
         if (current is CaptureState.Editing) keep(current)
+        val problem = FocusedInput.blocked(app) ?: if (SpeechModel.state(language) != ModelState.Installed) {
+            "Download the ${SpeechModel.info(language).languageName} speech model first."
+        } else {
+            null
+        }
+        if (problem != null) {
+            _state.value = CaptureState.Idle(problem)
+            return
+        }
         val input = try {
-            testInput(app)?.let { WavFileInput(it, realTime = true) } ?: MicInput.start()
+            FocusedInput(testInput(app)?.let { WavFileInput(it, realTime = true) } ?: MicInput.start(), app)
         } catch (e: IOException) {
             _state.value = CaptureState.Idle(e.message)
             return
@@ -119,11 +138,12 @@ object Capture {
             return
         }
         val autoStop = if (Settings.autoStop(app)) AutoStop(Settings.silenceMs(app).toLong()) else null
-        val listener = Listener(id)
+        val listener = Listener(id, fromIcon)
         val r = Recorder(store.audioFile(id), { SpeechModel.load(app, language) }, Settings.maxSeconds(app) * 1000L, autoStop, listener)
         listener.recorder = r
         recorder = r
-        _state.value = CaptureState.Recording(id, autoStopMs = autoStop?.silenceMs)
+        _state.value = CaptureState.Recording(id, autoStopMs = autoStop?.silenceMs, fromIcon = fromIcon)
+        Log.i(TAG, "Recording started")
         r.start(input)?.let { error ->
             recorder = null
             store.delete(id)
@@ -151,6 +171,7 @@ object Capture {
 
     /** The app leaves the screen: a recording ends there, edited text is stored. */
     fun onHidden() {
+        startWhenSettled = null
         stop()
         (_state.value as? CaptureState.Editing)?.let(::keep)
     }
@@ -191,7 +212,10 @@ object Capture {
      * Saves the text on screen into the Markdown file. With [force], a possible earlier
      * write is not looked for (the user chose "Save anyway").
      */
-    fun save(context: Context, force: Boolean = false) {
+    fun save(context: Context, force: Boolean = false) = save(context, force, closeApp = false)
+
+    /** [closeApp]: saved by itself after a start from the Record icon; see [CaptureState.Saved]. */
+    private fun save(context: Context, force: Boolean, closeApp: Boolean) {
         val editing = _state.value as? CaptureState.Editing ?: return
         val app = context.applicationContext
         val uri = Settings.targetUri(app)
@@ -214,7 +238,8 @@ object Capture {
             }
             // If this fails, the record still says SAVING and recovery checks the file.
             runCatching { store.put(result) }
-            show(result)
+            show(result, closeApp)
+            settled()
         }
     }
 
@@ -230,6 +255,7 @@ object Capture {
             val result = TaskSaver.saved(record, line, fileName)
             runCatching { store.put(result) }
             show(result)
+            settled()
         }
     }
 
@@ -240,9 +266,21 @@ object Capture {
         scope.launch { store.deleteOldAudio(System.currentTimeMillis() - days * DAY_MS) }
     }
 
-    private fun show(record: CaptureRecord) {
+    /** Starts the capture a Record tap asked for while the last one was finishing. */
+    private fun settled() {
+        val fromIcon = startWhenSettled ?: return
+        startWhenSettled = null
+        start(app, fromIcon)
+    }
+
+    private fun show(record: CaptureRecord, closeApp: Boolean = false) {
         _state.value = if (record.isSaved) {
-            CaptureState.Saved(record.id, record.savedLine.orEmpty(), record.savedTo.orEmpty())
+            CaptureState.Saved(
+                record.id,
+                record.savedLine.orEmpty(),
+                record.savedTo.orEmpty(),
+                closeApp && startWhenSettled == null && Settings.closeAfterAutoSave(app),
+            )
         } else {
             CaptureState.Editing(record.id, record.text, record.message, record.needsDecision)
         }
@@ -299,7 +337,7 @@ object Capture {
         )
     }
 
-    private class Listener(val id: String) : Recorder.Listener {
+    private class Listener(val id: String, val fromIcon: Boolean) : Recorder.Listener {
         lateinit var recorder: Recorder
         private val active get() = Capture.recorder === recorder
 
@@ -332,7 +370,7 @@ object Capture {
                 stored = false
             }
             _state.value = CaptureState.Editing(id, text, message)
-            if (autoSave && stored && message == null) save(app)
+            if (autoSave && stored && message == null) save(app, force = false, closeApp = fromIcon) else settled()
         }
     }
 }

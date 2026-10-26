@@ -166,16 +166,24 @@ private fun RecordingSettings() {
 private fun AutoSave() {
     val context = LocalContext.current
     var autoSave by remember { mutableStateOf(Settings.autoSave(context)) }
+    var close by remember { mutableStateOf(Settings.closeAfterAutoSave(context)) }
     Section("Saving") {
         SwitchRow("Save without tapping Save", autoSave) {
             autoSave = it
             Settings.setAutoSave(context, it)
         }
         Text(
-            "Recognized text goes into the file right after recording. Captures with a problem, " +
-                "or with nothing recognized, still wait for you.",
+            "Recognized text goes into the file right after recording, if the recognizer is sure " +
+                "of the words. Other captures still wait for you.",
             style = MaterialTheme.typography.bodySmall,
         )
+        if (autoSave) {
+            SwitchRow("Then go back to the home screen", close) {
+                close = it
+                Settings.setCloseAfterAutoSave(context, it)
+            }
+            Text("Only when recording started from the Record icon.", style = MaterialTheme.typography.bodySmall)
+        }
     }
 }
 

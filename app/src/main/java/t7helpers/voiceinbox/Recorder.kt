@@ -200,6 +200,10 @@ class Recorder(
             while (!stopRequested) {
                 val n = input.read(buffer)
                 if (n < 0) break
+                input.interruption?.let {
+                    recordError = it
+                    break
+                }
                 if (n == 0) continue
                 wav.write(buffer, n)
                 queue.put(buffer.copyOf(n))

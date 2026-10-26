@@ -14,7 +14,7 @@ save it). The app appends one line to the Markdown file you picked:
 Every capture is kept, with its audio, until you delete it: if saving fails or the app
 is closed or killed at any point, the capture waits in **History** to be saved.
 
-Status: version 0.3.0. Russian and English. See `AGENTS.md` for the plan.
+Status: version 0.4.0. Russian and English. See `AGENTS.md` for the plan.
 
 ## Install and first run
 
@@ -42,7 +42,12 @@ Status: version 0.3.0. Russian and English. See `AGENTS.md` for the plan.
   words.
 - **Save without tapping Save** (Settings, off by default) saves the text right after
   recording, but only when the recording ended normally and the recognizer is sure of
-  the words. Otherwise the capture waits for you with the reason.
+  the words. Otherwise the capture waits for you with the reason. Started from the Record
+  icon, the app then goes back to the home screen by itself (Settings).
+- Music and other sound pause while you record, and the screen stays on. A call ends the
+  recording and keeps what was said; during a call, recording does not start.
+- Tapping Record again while the last note is still being saved starts the next one
+  right after it.
 
 ## How saving works
 

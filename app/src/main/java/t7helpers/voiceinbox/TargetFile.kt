@@ -67,10 +67,14 @@ object TargetFile {
             if (current.status == CaptureStatus.SAVED || current.needsDecision) return current
             persist(current)
         }
-        return open(context, uri, "rw") { file -> TaskSaver.append(current, file, uri.toString(), fileName, persist) }
-            .getOrElse { problem ->
-                current.copy(status = CaptureStatus.FAILED, pending = if (force) pending else null, message = "Not saved. $problem")
-            }
+        return when (val opened = open(context, uri, "rw") { file -> TaskSaver.append(current, file, uri.toString(), fileName, persist) }) {
+            is Outcome.Done -> opened.value
+            is Outcome.Failed -> current.copy(
+                status = CaptureStatus.FAILED,
+                pending = if (force) pending else null,
+                message = "Not saved. ${opened.message}",
+            )
+        }
     }
 
     /** Looks in the file of [record]'s unconfirmed write for the line; see [TaskSaver.resolve]. */
@@ -78,16 +82,20 @@ object TargetFile {
         val pending = record.pending ?: return record
         val bytes = pending.text.toByteArray(Charsets.UTF_8)
         var problem: String? = null
-        val check = open(context, pending.uri.toUri(), "r") { file ->
+        val opened = open(context, pending.uri.toUri(), "r") { file ->
             try {
                 MarkdownAppend.check(file, pending.offset, bytes)
             } catch (e: IOException) {
                 problem = e.message
                 null
             }
-        }.getOrElse {
-            problem = it
-            null
+        }
+        val check = when (opened) {
+            is Outcome.Done -> opened.value
+            is Outcome.Failed -> {
+                problem = opened.message
+                null
+            }
         }
         return TaskSaver.resolve(record, check, problem, absentMessage)
     }
@@ -100,7 +108,7 @@ object TargetFile {
         val pfd = try {
             context.contentResolver.openFileDescriptor(uri, mode)
         } catch (e: SecurityException) {
-            return Outcome.Failed("No permission to use the file any more. Choose it again in Settings.")
+            return Outcome.Failed("Voice Inbox lost access to the file. Choose it again with Change.")
         } catch (e: FileNotFoundException) {
             return Outcome.Failed("The file is missing or cannot be opened: ${e.message}")
         } catch (e: Exception) {
@@ -126,11 +134,6 @@ object TargetFile {
     private sealed interface Outcome<out T> {
         class Done<T>(val value: T) : Outcome<T>
         class Failed(val message: String) : Outcome<Nothing>
-
-        fun getOrElse(onFailure: (String) -> @UnsafeVariance T): T = when (this) {
-            is Done -> value
-            is Failed -> onFailure(message)
-        }
     }
 }
 

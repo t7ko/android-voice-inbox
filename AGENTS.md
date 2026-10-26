@@ -23,8 +23,9 @@ only after the user approves.
 3. Done (0.3.0): a "Record" launcher icon and shortcut that start recording at once;
    stopping after silence; the longest recording; optional saving without Save; the
    English model and a language choice.
-4. Polish: interruptions (calls, audio focus), permission revocation, rapid repeated
-   captures, startup and recognition latency.
+4. Done (0.4.0): calls and other sound (audio focus, refusal during a call), lost file
+   access, Record taps while the last capture finishes, the screen kept on while
+   recording, going back to the home screen after saving by itself, start-up timing.
 
 ## Decisions
 
@@ -116,6 +117,24 @@ only after the user approves.
   in the editor with the reason. Measured on clean clips: real speech 0.96 to 1.0, English
   through the Russian model 0.80, a word made up from faint noise ("huh") 0.68. On a
   phone, every capture it held back had a wrong word and every one it saved was right.
+- Other sound (`FocusedInput`, around any input): a recording holds
+  `AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE` (usage assistant, speech), so music and podcasts
+  pause. Losing focus for good or for a while (a ringing call, another recording) ends
+  it with a message; a notification that only asks others to duck does not. On Android
+  10+, `MicInput` also watches `AudioRecordingConfiguration.isClientSilenced`, which is
+  how Android takes the microphone for a call. While the phone is in a call
+  (`MODE_IN_CALL` or `MODE_IN_COMMUNICATION`) recording does not start. An interrupted
+  capture keeps its audio and text and is never saved by itself.
+- A Record tap while the last capture is still being recognized or saved is kept
+  (`Capture.startWhenSettled`) and starts the next capture as soon as that is done, so a
+  quick "and one more" is not lost. Leaving the app drops it.
+- The screen stays on while recording (`View.keepScreenOn` in the recording screen): a
+  screen that times out would end the recording.
+- After saving by itself a capture the Record icon started, the app shows "Saved" for
+  1.5 s and goes back to the home screen (`moveTaskToBack`; Settings, on by default).
+  Not when another capture is waiting to start. "Saved" confirms with a haptic tick.
+- The log (tag `VoiceInbox`) notes when recording starts and how long a model took to
+  load, never any text.
 - Debug builds take `files/test-input.wav` instead of the microphone while that file
   exists, played in real time (`WavFileInput`), because the emulator's microphone records
   silence. Release builds ignore it.
@@ -209,6 +228,10 @@ Versions are in `gradle/libs.versions.toml`. The scripts are for Windows PowerSh
   -filter_complex "[0:a]atrim=0:5,aresample=16000,aformat=sample_fmts=s16:channel_layouts=mono[s];[1:a]aformat=sample_fmts=s16:channel_layouts=mono[n];[s][n]concat=n=2:v=0:a=1"
   -ar 16000 -ac 1 -c:a pcm_s16le out.wav`. English speech: Windows' own en-US voices
   through `System.Speech` (`SetOutputToWaveFile` with 16 kHz mono 16-bit).
+- Calls: `adb emu gsm call 5551234` rings (`accept`, `cancel` with the same number).
+- A lost file grant: as root (`adb root`), delete `/data/system/urigrants.xml` (Android's
+  binary XML of persisted grants; on the emulator only this app's) and reboot.
+- Timing: `adb logcat` lines of `ActivityTaskManager` (START, Displayed) and `VoiceInbox`.
 - `adb shell am start -n t7helpers.voiceinbox/.ui.RecordActivity` is a tap on the Record
   icon. Settings can be changed with the app stopped by `run-as ... sed -i` on
   `shared_prefs/settings.xml`.
@@ -284,5 +307,28 @@ saved. Of three English notes only the carefully spoken one was right and saved;
 with one or two wrong words were held back. So every held-back capture had a mistake and
 every saved one was right: the 0.85 threshold works on this phone.
 
-Not tried yet: a revoked SAF grant, a provider other than local storage, recovery without
-the speech model, Android 8-12, release builds.
+On 2026-10-26, version 0.4.0 (debug build) on the Android 14 emulator:
+
+- From a tap on Record to recording: 2.1 s with the app's process not running (the first
+  frame came at 4.9 s, the model was loaded at 8.1 s: recording does not wait for
+  either), 0.24 s with it running.
+- While recording, the app holds the screen on (WindowManager's screen-bright wake lock
+  for its window) and the focus `GAIN_TRANSIENT_EXCLUSIVE`; both are gone afterwards.
+- With saving by itself on: the Record icon, speech, the stop on silence and the save ran
+  without a touch, and the app went back to the home screen.
+- A call ringing 4 s into a recording stopped it at 5.3 s: "Recording stopped: a call or
+  another app took over the sound.", text kept, not saved by itself, the app stayed. In
+  an answered call, Record says "Recording is not possible during a call." and creates
+  nothing.
+- Two Record taps at once: one capture. Stop and at once Record: the first capture was
+  saved, then the second started; the app did not go to the home screen in between.
+- With the file grant gone, the capture screen says the app lost access; Save says "Not
+  saved. Voice Inbox lost access to the file. Choose it again with Change."; after
+  Change and picking the file, Save works. A moved file gives "The file is missing...".
+  This found a bug from 0.2.0: any failure to open the file showed a ClassCastException
+  instead (a `getOrElse` with `@UnsafeVariance` on an `Outcome<Nothing>`); the capture was
+  kept, and it is fixed.
+
+Not tried yet: music actually pausing (no player on the emulator; the focus request is
+there), `isClientSilenced` on a real call, a provider other than local storage, recovery
+without the speech model, Android 8-12, release builds.

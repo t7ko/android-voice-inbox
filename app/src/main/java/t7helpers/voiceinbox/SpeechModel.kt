@@ -1,6 +1,7 @@
 package t7helpers.voiceinbox
 
 import android.content.Context
+import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -136,7 +137,11 @@ object SpeechModel {
         val dir = dir(context, info)
         if (!dir.isDirectory) throw IOException("The ${info.languageName} speech model is not installed. Download it in Settings.")
         LibVosk.setLogLevel(LogLevel.WARNINGS)
-        return Model(dir.path).also { loaded[language] = it }
+        val started = System.currentTimeMillis()
+        return Model(dir.path).also {
+            loaded[language] = it
+            Log.i("VoiceInbox", "Model ${info.name} loaded in ${System.currentTimeMillis() - started} ms")
+        }
     }
 
     private fun download(info: ModelInfo, part: File, progress: (Long) -> Unit) {

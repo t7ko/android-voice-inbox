@@ -14,6 +14,7 @@ object Settings {
     private const val SILENCE_MS = "silenceMs"
     private const val MAX_SECONDS = "maxSeconds"
     private const val AUTO_SAVE = "autoSave"
+    private const val CLOSE_AFTER_AUTO_SAVE = "closeAfterAutoSave"
 
     /** Choices for [audioRetentionDays]; [KEEP_AUDIO] keeps it. */
     val AUDIO_RETENTION_CHOICES = listOf(1, 7, 30, KEEP_AUDIO)
@@ -60,4 +61,10 @@ object Settings {
     fun autoSave(context: Context): Boolean = prefs(context).getBoolean(AUTO_SAVE, false)
 
     fun setAutoSave(context: Context, on: Boolean) = prefs(context).edit(commit = true) { putBoolean(AUTO_SAVE, on) }
+
+    /** Whether the app goes back to the home screen after saving by itself what the Record icon started. */
+    fun closeAfterAutoSave(context: Context): Boolean = prefs(context).getBoolean(CLOSE_AFTER_AUTO_SAVE, true)
+
+    fun setCloseAfterAutoSave(context: Context, on: Boolean) =
+        prefs(context).edit(commit = true) { putBoolean(CLOSE_AFTER_AUTO_SAVE, on) }
 }

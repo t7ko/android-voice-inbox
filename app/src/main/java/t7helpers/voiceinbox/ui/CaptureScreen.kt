@@ -37,6 +37,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -44,7 +46,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -158,6 +163,12 @@ private fun Idle(
 
 @Composable
 private fun Recording(state: CaptureState.Recording) {
+    // A screen that times out would end the recording (no background recording).
+    val view = LocalView.current
+    DisposableEffect(view) {
+        view.keepScreenOn = true
+        onDispose { view.keepScreenOn = false }
+    }
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Box(
             Modifier
@@ -259,6 +270,8 @@ private fun Busy(text: String) {
 
 @Composable
 private fun Saved(state: CaptureState.Saved, onRecord: () -> Unit) {
+    val haptic = LocalHapticFeedback.current
+    LaunchedEffect(state.id) { haptic.performHapticFeedback(HapticFeedbackType.Confirm) }
     Icon(
         Icons.Filled.CheckCircle,
         contentDescription = null,
@@ -266,6 +279,7 @@ private fun Saved(state: CaptureState.Saved, onRecord: () -> Unit) {
         modifier = Modifier.padding(top = 16.dp).size(96.dp),
     )
     Text("Saved to ${state.fileName}", style = MaterialTheme.typography.titleLarge)
+    if (state.closeApp) Text("Going back to the home screen…", style = MaterialTheme.typography.bodyMedium)
     Card(Modifier.fillMaxWidth()) {
         Text(state.line, Modifier.padding(16.dp), fontFamily = FontFamily.Monospace)
     }

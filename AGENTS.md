@@ -195,7 +195,11 @@ Versions are in `gradle/libs.versions.toml`. The scripts are for Windows PowerSh
 - `scripts/build.ps1` runs the unit tests and writes `dist/voice-inbox-<version>.apk`, a
   release build signed with the key named in the git-ignored `local.properties`
   (`release.storeFile`, `release.storePasswordFile`, `release.keyAlias`); without it the
-  script stops. `gradlew.bat assembleDebug` is enough for the emulator.
+  script stops. `gradlew.bat assembleDebug` is enough for the emulator. Certificate
+  SHA-256: `1b5b3bab98e45cf39579cac68043528e15cd42fc127e0a088b63bef2b9fd1b2b`. Every update
+  must use this key, or the app has to be uninstalled and loses its data.
+- A release: raise `versionCode` and `versionName` in `app/build.gradle.kts`, commit, run
+  `scripts/release.ps1`. Obtainium compares the tag with the installed versionName.
 - `scripts/release.ps1` tags `v<versionName>`, pushes, and publishes the APK as a GitHub
   release at `t7ko/android-voice-inbox` for Obtainium, with the token file named by
   `github.tokenFile` in `local.properties`. Never print a token or password, or put one

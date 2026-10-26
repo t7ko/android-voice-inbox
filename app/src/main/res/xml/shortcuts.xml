@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:enabled="true"
+        android:icon="@mipmap/ic_record"
+        android:shortcutId="record"
+        android:shortcutShortLabel="@string/record_label">
+        <intent
+            android:action="t7helpers.voiceinbox.action.RECORD"
+            android:targetClass="t7helpers.voiceinbox.ui.RecordActivity"
+            android:targetPackage="t7helpers.voiceinbox" />
+    </shortcut>
+</shortcuts>

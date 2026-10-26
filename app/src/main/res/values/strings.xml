@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Voice Inbox</string>
+    <!-- The launcher icon and shortcut that start recording at once. -->
+    <string name="record_label">Record</string>
 </resources>

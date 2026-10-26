@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -16,8 +17,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import t7helpers.voiceinbox.ModelInfo
 import t7helpers.voiceinbox.ModelState
 import t7helpers.voiceinbox.SpeechModel
+import java.util.Locale
 
 /** Where captures go, with a button to pick another file. */
 @Composable
@@ -43,16 +46,15 @@ fun TargetCard(target: Target, onPickTarget: () -> Unit) {
     }
 }
 
-/** The speech model's state, with Download while it is missing. */
+/** A speech model's state, with Download while it is missing. */
 @Composable
-fun ModelCard(state: ModelState, onInstall: () -> Unit) {
-    val info = SpeechModel.info
+fun ModelCard(info: ModelInfo, state: ModelState, onInstall: () -> Unit) {
     val colors = if (state == ModelState.Installed) CardDefaults.cardColors() else {
         CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
     }
     Card(Modifier.fillMaxWidth(), colors = colors) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Speech model: ${info.language}", style = MaterialTheme.typography.titleMedium)
+            Text("Speech model: ${info.languageName}", style = MaterialTheme.typography.titleMedium)
             when (state) {
                 ModelState.Missing -> {
                     Text(
@@ -84,8 +86,26 @@ fun ModelCard(state: ModelState, onInstall: () -> Unit) {
 
 private fun megabytes(bytes: Long) = (bytes + 500_000) / 1_000_000
 
+/** 1500 ms as `1.5 s`, 2000 as `2 s`. */
+fun formatSeconds(ms: Long): String =
+    if (ms % 1000 == 0L) "${ms / 1000} s" else String.format(Locale.ROOT, "%.1f s", ms / 1000.0)
+
 /** 75 seconds as `1:15`. */
 fun formatDuration(ms: Long): String {
     val seconds = ms / 1000
     return "%d:%02d".format(seconds / 60, seconds % 60)
+}
+
+/** Chips to pick the language of new captures. */
+@Composable
+fun LanguageChips(language: String, onLanguage: (String) -> Unit) {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        for (info in SpeechModel.ALL) {
+            FilterChip(
+                selected = info.language == language,
+                onClick = { onLanguage(info.language) },
+                label = { Text(info.languageName) },
+            )
+        }
+    }
 }

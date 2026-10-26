@@ -1,6 +1,7 @@
 package t7helpers.voiceinbox.ui
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -29,6 +30,10 @@ data class Target(val name: String?, val accessible: Boolean, val problem: Strin
 class MainActivity : ComponentActivity() {
     private var screen by mutableStateOf(Screen.CAPTURE)
     private var target by mutableStateOf(Target(null, false))
+    private var language by mutableStateOf("")
+
+    /** Set by the Record icon; recording starts once the activity is in front. */
+    private var recordOnResume = false
 
     private val targetPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) target = readTarget(problem = TargetFile.choose(this, uri))
@@ -43,9 +48,12 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         Capture.init(this)
         SpeechModel.refresh(this)
-        SpeechModel.preload(this)
+        language = Settings.language(this)
+        SpeechModel.preload(this, language)
         screen = savedInstanceState?.getString(KEY_SCREEN)?.let { name -> Screen.entries.find { it.name == name } }
             ?: Screen.CAPTURE
+        // Not again after a rotation, which recreates the activity with the same intent.
+        if (savedInstanceState == null) handle(intent)
 
         setContent {
             VoiceInboxTheme {
@@ -53,6 +61,8 @@ class MainActivity : ComponentActivity() {
                 when (screen) {
                     Screen.CAPTURE -> CaptureScreen(
                         target,
+                        language,
+                        onLanguage = ::chooseLanguage,
                         onRecord = ::record,
                         onPickTarget = ::pickTarget,
                         onOpenAppInfo = ::openAppInfo,
@@ -60,15 +70,30 @@ class MainActivity : ComponentActivity() {
                         onOpenSettings = { screen = Screen.SETTINGS },
                     )
                     Screen.HISTORY -> HistoryScreen(onOpen = ::openCapture, onBack = { screen = Screen.CAPTURE })
-                    Screen.SETTINGS -> SettingsScreen(target, onPickTarget = ::pickTarget, onBack = { screen = Screen.CAPTURE })
+                    Screen.SETTINGS -> SettingsScreen(
+                        target,
+                        language,
+                        onLanguage = ::chooseLanguage,
+                        onPickTarget = ::pickTarget,
+                        onBack = { screen = Screen.CAPTURE },
+                    )
                 }
             }
         }
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handle(intent)
+    }
+
     override fun onResume() {
         super.onResume()
         target = readTarget(target.problem)
+        if (recordOnResume) {
+            recordOnResume = false
+            record()
+        }
     }
 
     override fun onStop() {
@@ -83,9 +108,22 @@ class MainActivity : ComponentActivity() {
         outState.putString(KEY_SCREEN, screen.name)
     }
 
+    private fun handle(intent: Intent) {
+        if (intent.action == ACTION_RECORD) {
+            screen = Screen.CAPTURE
+            recordOnResume = true
+        }
+    }
+
     private fun readTarget(problem: String?): Target {
         val uri = Settings.targetUri(this) ?: return Target(null, false, problem)
         return Target(Settings.targetName(this), TargetFile.hasAccess(this, uri), problem)
+    }
+
+    private fun chooseLanguage(language: String) {
+        this.language = language
+        Settings.setLanguage(this, language)
+        SpeechModel.preload(this, language)
     }
 
     private fun record() {
@@ -113,7 +151,13 @@ class MainActivity : ComponentActivity() {
         startActivity(Intent(AndroidSettings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null)))
     }
 
-    private companion object {
-        const val KEY_SCREEN = "screen"
+    companion object {
+        private const val KEY_SCREEN = "screen"
+        private const val ACTION_RECORD = "t7helpers.voiceinbox.action.RECORD"
+
+        /** Opens the capture screen and starts recording, also when the app is open already. */
+        fun recordIntent(context: Context): Intent = Intent(context, MainActivity::class.java)
+            .setAction(ACTION_RECORD)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
     }
 }

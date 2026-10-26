@@ -3,8 +3,9 @@
 Speak a short note and get it as a Markdown task in your Obsidian vault, with speech
 recognition entirely on the phone (Android 8 or newer).
 
-Tap Record, speak, tap Stop. The recognized text shows while you speak; fix it if needed
-and tap Save. The app appends one line to the Markdown file you picked:
+Tap the red **Record** icon and speak. Recording stops when you stop speaking; the
+recognized text shows while you speak; fix it if needed and tap Save (or let the app
+save it). The app appends one line to the Markdown file you picked:
 
 ```markdown
 - [ ] Купить молоко и хлеб
@@ -13,19 +14,35 @@ and tap Save. The app appends one line to the Markdown file you picked:
 Every capture is kept, with its audio, until you delete it: if saving fails or the app
 is closed or killed at any point, the capture waits in **History** to be saved.
 
-Status: version 0.2.0. A one-tap shortcut that starts recording and stopping on silence
-are planned next (see `AGENTS.md`).
+Status: version 0.3.0. Russian and English. See `AGENTS.md` for the plan.
 
 ## Install and first run
 
 1. Install the APK from the [Releases](https://github.com/t7ko/android-voice-inbox/releases)
    page, or with [Obtainium](https://github.com/ImranR98/Obtainium) from
    `https://github.com/t7ko/android-voice-inbox`, which also installs updates.
-2. Open Voice Inbox and tap **Download** on the speech model card: 46 MB, once, over the
-   internet. After that the app works in airplane mode.
+2. Open Voice Inbox and tap **Download** on the speech model card: 46 MB for Russian,
+   once, over the internet. After that the app works in airplane mode. The English model
+   (41 MB) is in Settings.
 3. Tap **Choose** and pick the Markdown file, for example the inbox note of your vault.
    The app keeps access to that one file; Obsidian does not need to be running.
 4. Tap the microphone and allow recording.
+
+## Recording
+
+- The app installs two icons: **Voice Inbox** opens the app, **Record** (red) opens it
+  already recording. A long press on the Voice Inbox icon offers Record too. On Xiaomi
+  phones both icons appear on the home screen by themselves.
+- Recording stops by itself 2 seconds after you stop speaking (Settings: 1 to 5 s, or
+  off); short pauses between words do not stop it. If you say nothing, it stops after 10
+  seconds. It never runs longer than 2 minutes (Settings: 30 s to 5 min). Stop works at
+  any time.
+- **Russian** and **English** chips under the record button pick the language. Each model
+  knows only its language: English words in Russian speech come out as Russian-sounding
+  words.
+- **Save without tapping Save** (Settings, off by default) saves the text right after
+  recording, but only when the recording ended normally and the recognizer is sure of
+  the words. Otherwise the capture waits for you with the reason.
 
 ## How saving works
 
@@ -59,8 +76,8 @@ are planned next (see `AGENTS.md`).
 ## Privacy
 
 Audio, text and the file stay on the phone. The app has the INTERNET permission for one
-thing only: downloading the speech model from alphacephei.com, the Vosk project's site.
-The download is checked against a fixed SHA-256 checksum. Nothing else goes over the
+thing only: downloading the speech models from alphacephei.com, the Vosk project's site.
+Each download is checked against a fixed SHA-256 checksum. Nothing else goes over the
 network: no accounts, analytics or crash reports. To be sure, you can block the app's
 network access in the phone's settings after the download.
 
@@ -69,11 +86,10 @@ Recordings are kept in the app's private storage, about 1 MB per 30 seconds.
 ## Speech recognition
 
 Recognition uses [Vosk](https://alphacephei.com/vosk/) with the
-`vosk-model-small-ru-0.22` model (Apache 2.0). It is a small model made for phones:
-quick, but it writes everything in lowercase without punctuation (the app capitalizes the
-first letter) and gets some words wrong, so expect to correct the text now and then.
-English words in Russian speech come out as Russian-sounding words; an English model is
-planned as a separate choice.
+`vosk-model-small-ru-0.22` and `vosk-model-small-en-us-0.15` models (Apache 2.0). They
+are small models made for phones: quick, but they write everything in lowercase without
+punctuation (the app capitalizes the first letter) and get some words wrong, so expect to
+correct the text now and then.
 
 ## Known limitations
 

@@ -61,6 +61,8 @@ import t7helpers.voiceinbox.SpeechModel
 @Composable
 fun CaptureScreen(
     target: Target,
+    language: String,
+    onLanguage: (String) -> Unit,
     onRecord: () -> Unit,
     onPickTarget: () -> Unit,
     onOpenAppInfo: () -> Unit,
@@ -68,7 +70,8 @@ fun CaptureScreen(
     onOpenSettings: () -> Unit,
 ) {
     val state by Capture.state.collectAsState()
-    val model by SpeechModel.state.collectAsState()
+    val models by SpeechModel.states.collectAsState()
+    val model = models[language] ?: ModelState.Missing
     val records by Capture.records.collectAsState()
     val unsaved = records.count { it.status == CaptureStatus.READY || it.status == CaptureStatus.FAILED }
     val context = LocalContext.current
@@ -94,10 +97,22 @@ fun CaptureScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            if (model != ModelState.Installed) ModelCard(model, onInstall = { SpeechModel.install(context) })
+            if (model != ModelState.Installed) {
+                val info = SpeechModel.info(language)
+                ModelCard(info, model, onInstall = { SpeechModel.install(context, info) })
+            }
             TargetCard(target, onPickTarget)
             when (val s = state) {
-                is CaptureState.Idle -> Idle(s, canRecord = model == ModelState.Installed, unsaved, onRecord, onOpenAppInfo, onOpenHistory)
+                is CaptureState.Idle -> Idle(
+                    s,
+                    canRecord = model == ModelState.Installed,
+                    language,
+                    unsaved,
+                    onLanguage,
+                    onRecord,
+                    onOpenAppInfo,
+                    onOpenHistory,
+                )
                 is CaptureState.Recording -> Recording(s)
                 is CaptureState.Editing -> Editing(s, canSave = target.name != null, onRecord)
                 is CaptureState.Saving -> Busy("Saving…")
@@ -111,7 +126,9 @@ fun CaptureScreen(
 private fun Idle(
     state: CaptureState.Idle,
     canRecord: Boolean,
+    language: String,
     unsaved: Int,
+    onLanguage: (String) -> Unit,
     onRecord: () -> Unit,
     onOpenAppInfo: () -> Unit,
     onOpenHistory: () -> Unit,
@@ -127,6 +144,7 @@ private fun Idle(
         }
     }
     Text(if (canRecord) "Tap to record" else "Download the speech model first", style = MaterialTheme.typography.titleMedium)
+    LanguageChips(language, onLanguage)
     state.message?.let {
         Text(it, color = MaterialTheme.colorScheme.error)
         if (state.openAppInfo) OutlinedButton(onClick = onOpenAppInfo) { Text("Open App info") }
@@ -158,6 +176,15 @@ private fun Recording(state: CaptureState.Recording) {
         },
         style = MaterialTheme.typography.titleMedium,
     )
+    state.autoStopMs?.let {
+        if (!state.stopping) {
+            Text(
+                "Stops after ${formatSeconds(it)} of silence",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
     Card(Modifier.fillMaxWidth().heightIn(min = 96.dp)) {
         Text(state.text, Modifier.padding(16.dp), style = MaterialTheme.typography.bodyLarge)
     }

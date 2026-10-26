@@ -54,6 +54,8 @@ data class CaptureRecord(
     val savedLine: String? = null,
     val savedTo: String? = null,
     val savedAt: Long? = null,
+    /** The [ModelInfo.language] it was recorded in. */
+    val language: String = SpeechModel.RUSSIAN.language,
     /** Not stored: whether `audio.wav` exists. */
     val hasAudio: Boolean = false,
 ) {
@@ -73,6 +75,7 @@ data class CaptureRecord(
         putOpt("savedLine", savedLine)
         putOpt("savedTo", savedTo)
         putOpt("savedAt", savedAt)
+        put("language", language)
     }.toString(2)
 
     companion object {
@@ -92,6 +95,7 @@ data class CaptureRecord(
                 savedLine = o.optStringOrNull("savedLine"),
                 savedTo = o.optStringOrNull("savedTo"),
                 savedAt = if (o.has("savedAt")) o.getLong("savedAt") else null,
+                language = o.optStringOrNull("language") ?: SpeechModel.RUSSIAN.language,
                 hasAudio = hasAudio,
             )
         }

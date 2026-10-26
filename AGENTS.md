@@ -1,7 +1,7 @@
 # Notes for AI coding agents: voice-inbox
 
-An Android app for one user that turns a short spoken note (Russian, later English too)
-into a Markdown task line appended to one file of an Obsidian vault:
+An Android app for one user that turns a short spoken note (Russian or English) into a
+Markdown task line appended to one file of an Obsidian vault:
 record → offline recognition with Vosk → edit → Save → `- [ ] text` at the end of the
 file. Reliability matters more than speed: no recording or text may be silently lost, and
 success is shown only after the write was read back.
@@ -20,16 +20,18 @@ only after the user approves.
 2. Done (0.2.0): a stored record per capture, History (open, copy, play, delete),
    retrying failed saves, recovery after a crash or kill, duplicate prevention (see
    "Exactly once"), deleting the audio of saved captures after a set time.
-3. Convenience: a launcher entry or shortcut that starts recording at once; automatic
-   stop after silence (Vosk's `Recognizer.setEndpointerDelays`, plus the level meter);
-   configurable timeout and maximum length; optional automatic saving; English model.
+3. Done (0.3.0): a "Record" launcher icon and shortcut that start recording at once;
+   stopping after silence; the longest recording; optional saving without Save; the
+   English model and a language choice.
 4. Polish: interruptions (calls, audio focus), permission revocation, rapid repeated
    captures, startup and recognition latency.
 
 ## Decisions
 
 - Recognition is Vosk (`com.alphacephei:vosk-android`, JNA plus `libvosk.so`) with
-  `vosk-model-small-ru-0.22`. Android's `SpeechRecognizer` is not used: it may send audio
+  `vosk-model-small-ru-0.22` and `vosk-model-small-en-us-0.15`. Each model knows one
+  language; the language of new captures is a setting, with chips on the capture screen,
+  and each capture stores its language for recognizing it again. Android's `SpeechRecognizer` is not used: it may send audio
   to Google. Vosk's own `SpeechService` is not used either: it owns the `AudioRecord`, so
   the app could neither keep the audio nor measure its level.
 - Record and recognize in one pass (`Recorder`): one thread reads the `AudioInput` and
@@ -39,13 +41,20 @@ only after the user approves.
   (the WAV header gets its sizes at the end; until then the file length tells), and the
   final text is ready right after Stop. Vosk returns a finished piece of text whenever it
   detects a pause; `Transcript.join` strings them together.
-- The model is downloaded by the app, once, from alphacephei.com (`SpeechModel`): the
-  user did not want 50 MB in every APK update. This is the only use of the INTERNET
+- Models are downloaded by the app, once each, from alphacephei.com (`SpeechModel`): the
+  user did not want 40-50 MB in every APK update. This is the only use of the INTERNET
   permission. The download resumes after an interruption (HTTP Range), is checked
   against a pinned size and SHA-256, unpacked into a temporary folder (refusing paths
   outside it) and renamed into `files/models/<name>`, so a half-unpacked model is never
-  used. The loaded `Model` stays in memory for the process; it is loaded right after
-  install and when the app starts.
+  used. A loaded `Model` stays in memory for the process; the current language's is
+  loaded right after install, when the app starts and when the language changes.
+- Models are pinned (name, URL, size, SHA-256), and nothing checks for newer ones: that
+  would need the network again. Vosk publishes a new model under a new name, rarely (the
+  small Russian one is from 2021, the small English one from 2020, both still the newest
+  small ones in 2026-10). A newer model means a new `ModelInfo` in an app release; the
+  old one's folder in `files/models` then has to be deleted by the app. A bigger English
+  model, `vosk-model-en-us-0.22-lgraph` (128 MB, 7.8% WER on LibriSpeech against 9.9%),
+  is the option if English recognition is too weak.
 - Appending (`MarkdownAppend`, `TargetFile`): the file is opened `"rw"` through the
   Storage Access Framework, which never truncates, and the line is written with `pwrite`
   at the end offset, then `fsync`ed and read back. Not `"wa"`, which some document
@@ -85,6 +94,28 @@ only after the user approves.
 - Settings: the audio of saved captures is deleted 1, 7 (default) or 30 days after
   saving, or kept; the record stays. Checked at every start of the process and when the
   setting changes.
+- The "Record" icon is a second launcher activity, `RecordActivity` (also the target of
+  the static app shortcut "Record"), not a pinned shortcut: MIUI/HyperOS often deny
+  sideloaded apps the permission to pin shortcuts, and HyperOS puts every launcher entry
+  on the home screen anyway. `RecordActivity` has no UI and its own task affinity; it
+  starts `MainActivity` with `ACTION_RECORD` (`NEW_TASK | CLEAR_TOP | SINGLE_TOP`) and
+  finishes, so each tap reaches the app, also when it is open on another screen. A launcher
+  alias of `MainActivity` would only bring the open app forward. Recording starts in
+  `onResume`, once the app is in front; not again after a rotation.
+- Stopping on silence (`AutoStop`, on by default): Vosk's endpointer, set with
+  `Recognizer.setEndpointerDelays(10, silence, longest + 5)`, ends an utterance after
+  `silence` seconds of silence following speech if it is sure the speech ended, after
+  0.5 s or 1 s more if less sure (vosk-api `recognizer.cc`); the recording stops at the
+  first end of an utterance that has text. With no text after 10 s of audio, it stops
+  too. The longest recording (Settings, 2 min by default) applies with or without it, and
+  the utterance limit is set above it so long speech is not cut. On the test clips it
+  stopped 1.7 to 3.4 s after the speech.
+- Saving without Save (`AutoSave`, off by default) only for a recording that ended by
+  Stop or by the pause after speech, with no error, and with a mean word confidence of at
+  least 0.85 (`Recognizer.setWords(true)` gives each word's `conf`). Otherwise it waits
+  in the editor with the reason. Measured on clean clips: real speech 0.96 to 1.0, English
+  through the Russian model 0.80, a word made up from faint noise ("huh") 0.68. On a
+  phone, every capture it held back had a wrong word and every one it saved was right.
 - Debug builds take `files/test-input.wav` instead of the microphone while that file
   exists, played in real time (`WavFileInput`), because the emulator's microphone records
   silence. Release builds ignore it.
@@ -121,20 +152,22 @@ there, but the capture stays SAVED in History with its text.
 ## Layout
 
 - `app/src/main/java/t7helpers/voiceinbox/`: `Capture` (the capture on screen, saving,
-  recovery), `Captures` (`CaptureRecord`, `CaptureStore`), `Recorder`, `Transcriber` and
-  `Transcript` (recording and recognition threads), `AudioInput` (`MicInput`,
+  recovery), `Captures` (`CaptureRecord`, `CaptureStore`), `Recorder`, `Transcriber`,
+  `Transcript`, `AutoStop`, `AutoSave` and `StopReason` (recording and recognition
+  threads, when to stop and to save), `AudioInput` (`MicInput`,
   `WavFileInput`), `Wav` (header, writer, repair, level), `SpeechModel` and `ModelZip`
   (download, unpack, load), `Markdown` (task line, append algorithm, `TaskSaver`),
   `TargetFile` (SAF access, pread/pwrite), `Settings`.
 - `.../ui/`: Compose screens `CaptureScreen`, `HistoryScreen` and `SettingsScreen`,
-  shared cards in `Components`, `AudioPlayer`; navigation is a plain enum in
+  shared cards and chips in `Components`, `AudioPlayer`, `RecordActivity`; navigation is a plain enum in
   `MainActivity`, which also holds the file picker and the microphone permission request.
 - `app/src/test/`: JVM unit tests against real files (`RafAccess`): the append algorithm
   (empty file, with and without a trailing line break, CRLF, BOM, repeated captures,
   failing and non-sticking writes, a file growing meanwhile), `TaskSaver` (what is stored
   before writing, retries after confirmed and failed unconfirmed writes, a same-text
   earlier capture, moved and removed lines), the record format and store, WAV writing,
-  reading and repair, the transcript, and model archive unpacking.
+  reading and repair, the transcript and word confidences, `AutoStop`, `AutoSave`, and
+  model archive unpacking.
 
 ## Build and releases
 
@@ -171,6 +204,14 @@ Versions are in `gradle/libs.versions.toml`. The scripts are for Windows PowerSh
   with the app stopped, write the `capture.json` a crash would leave (status `SAVING`
   with a `pending` write) and set up the target file to match. Write it with a JSON
   library: shell quoting easily turns an escaped line break into a real one.
+- Stopping on silence needs a clip with a pause: speech, then a few seconds of faint
+  noise, e.g. `ffmpeg -i ru.ogg -f lavfi -t 8 -i "anoisesrc=r=16000:a=0.002:c=pink"
+  -filter_complex "[0:a]atrim=0:5,aresample=16000,aformat=sample_fmts=s16:channel_layouts=mono[s];[1:a]aformat=sample_fmts=s16:channel_layouts=mono[n];[s][n]concat=n=2:v=0:a=1"
+  -ar 16000 -ac 1 -c:a pcm_s16le out.wav`. English speech: Windows' own en-US voices
+  through `System.Speech` (`SetOutputToWaveFile` with 16 kHz mono 16-bit).
+- `adb shell am start -n t7helpers.voiceinbox/.ui.RecordActivity` is a tap on the Record
+  icon. Settings can be changed with the app stopped by `run-as ... sed -i` on
+  `shared_prefs/settings.xml`.
 
 ## Tested
 
@@ -219,6 +260,29 @@ On 2026-10-25, version 0.2.0 (debug build), installed over 0.1.0 with its data:
 - A capture saved 10 days ago lost its audio at start (7 days by default) and kept its
   record; an unsaved one kept its audio.
 
-Not tried yet: a real phone and real speech through a microphone, a revoked SAF grant,
-a provider other than local storage, recovery without the speech model, Android 8-13,
-release builds.
+On 2026-10-25, version 0.3.0 (debug build), installed over 0.2.0:
+
+- Two launcher entries (Voice Inbox, Record) and the static shortcut "record". The Record
+  icon in the app drawer, the long-press shortcut, and `RecordActivity` started while the
+  app showed History all opened the capture screen recording.
+- Stopping on silence (2 s): 5 s of Russian speech, then noise: stopped at 8.4 s. Only
+  faint noise: stopped at 10.1 s, "Nothing was recognized". The English sentence: stopped
+  at 4.9 s. With it off and the longest recording at 30 s, 35 s of noise stopped at 30.0 s.
+  The hint "Stops after 2 s of silence" shows while recording.
+- English: the model downloaded from Settings (41 MB); the chips switch the language; the
+  sentence came out as "Buy milk and call the dentist tomorrow morning".
+- Saving without Save, on: the shortcut, recording, stop on silence and saving all ran
+  with one tap (Russian and English). Held back with the reason: English through the
+  Russian model ("unsure", confidence 0.80) and "Huh huh" made up from 30 s of noise
+  ("time limit").
+- The whole row of a switch in Settings toggles it.
+
+On 2026-10-26, version 0.3.0 (debug build) on the user's phone, real speech, saving
+without Save on: two Russian notes stopped and saved by themselves; one at arm's length
+was recognized with one wrong word and held back; one with music in the background was
+saved. Of three English notes only the carefully spoken one was right and saved; the two
+with one or two wrong words were held back. So every held-back capture had a mistake and
+every saved one was right: the 0.85 threshold works on this phone.
+
+Not tried yet: a revoked SAF grant, a provider other than local storage, recovery without
+the speech model, Android 8-12, release builds.

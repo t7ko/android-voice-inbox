@@ -14,7 +14,7 @@ save it). The app appends one line to the Markdown file you picked:
 Every capture is kept, with its audio, until you delete it: if saving fails or the app
 is closed or killed at any point, the capture waits in **History** to be saved.
 
-Status: version 0.4.0. Russian and English. See `AGENTS.md` for the plan.
+Status: version 1.0.0. Russian and English. See `AGENTS.md` for the plan.
 
 ## Install and first run
 

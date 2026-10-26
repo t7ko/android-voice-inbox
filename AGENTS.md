@@ -232,6 +232,10 @@ Versions are in `gradle/libs.versions.toml`. The scripts are for Windows PowerSh
   -filter_complex "[0:a]atrim=0:5,aresample=16000,aformat=sample_fmts=s16:channel_layouts=mono[s];[1:a]aformat=sample_fmts=s16:channel_layouts=mono[n];[s][n]concat=n=2:v=0:a=1"
   -ar 16000 -ac 1 -c:a pcm_s16le out.wav`. English speech: Windows' own en-US voices
   through `System.Speech` (`SetOutputToWaveFile` with 16 kHz mono 16-bit).
+- Release builds carry only arm64 code. The x86_64 emulator installs them through its ARM
+  translation, downloads and unpacks the model, then crashes with SIGILL loading it: the
+  translation lacks instructions `libvosk.so` uses. Test release builds on a phone; the
+  library is the same file the debug builds use.
 - Calls: `adb emu gsm call 5551234` rings (`accept`, `cancel` with the same number).
 - A lost file grant: as root (`adb root`), delete `/data/system/urigrants.xml` (Android's
   binary XML of persisted grants; on the emulator only this app's) and reboot.

@@ -21,6 +21,12 @@ Status: version 1.0.0. Russian and English. See `AGENTS.md` for the plan.
 1. Install the APK from the [Releases](https://github.com/t7ko/android-voice-inbox/releases)
    page, or with [Obtainium](https://github.com/ImranR98/Obtainium) from
    `https://github.com/t7ko/android-voice-inbox`, which also installs updates.
+
+   If Obtainium cannot install the app or an update, often with an unclear error
+   message, the likely cause is Google Play Protect, which may block apps that are not
+   on Google Play. Install that version from the Releases page by hand; when Play
+   Protect warns about the app, tap **More details**, then **Install anyway**. Obtainium
+   then sees the installed version and keeps offering updates.
 2. Open Voice Inbox and tap **Download** on the speech model card: 46 MB for Russian,
    once, over the internet. After that the app works in airplane mode. The English model
    (41 MB) is in Settings.
